@@ -5,7 +5,6 @@ import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.AndroidViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,7 +15,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 
-class ProbeModel(app: Application) : AndroidViewModel(app) {
+class ProbeModel(private val app: Application) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val marker = File(app.filesDir, "ram.marker")
     private val workDir = File(app.filesDir, "probe")
@@ -37,6 +36,7 @@ class ProbeModel(app: Application) : AndroidViewModel(app) {
         private set
 
     init {
+        scope.launch(Dispatchers.IO) { workDir.deleteRecursively() }
         versionLines = Checks.version()
         if (marker.exists()) {
             val at = marker.readText().trim().toLongOrNull() ?: 0L
@@ -52,7 +52,7 @@ class ProbeModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun runRam() = start("ram") {
-        val claimed = Checks.totalRam(getApplication())
+        val claimed = Checks.totalRam(app)
         val info = JSONObject(Native.ramInfo())
         val cap = if (Build.SUPPORTED_64_BIT_ABIS.isEmpty()) 1500L else Long.MAX_VALUE
         val target = minOf(claimed * 4 / 10 / 1048576L, cap)
@@ -68,9 +68,12 @@ class ProbeModel(app: Application) : AndroidViewModel(app) {
 
     fun cancel() = Native.cancel()
 
+    private var ticks = 0
+
     private fun start(name: String, work: () -> Unit) {
         if (busy.isNotEmpty()) return
         busy = name
+        TestService.begin(app, "Starting $name test")
         fraction = null
         phase = ""
         Native.reset()
@@ -85,6 +88,7 @@ class ProbeModel(app: Application) : AndroidViewModel(app) {
                 withContext(Dispatchers.Default) { work() }
             } finally {
                 poller.cancel()
+                TestService.end(app)
                 busy = ""
             }
         }
@@ -100,8 +104,12 @@ class ProbeModel(app: Application) : AndroidViewModel(app) {
             4 -> "Checking memory"
             5 -> "Single-core run"
             6 -> "All-core run"
+            7 -> "Cleaning up test files"
             else -> ""
         }
         fraction = if (p[2] > 0) (p[1].toFloat() / p[2]).coerceIn(0f, 1f) else null
+        if (ticks++ % 8 == 0) {
+            TestService.update(app, phase, fraction?.let { (it * 100).toInt() } ?: -1)
+        }
     }
 }

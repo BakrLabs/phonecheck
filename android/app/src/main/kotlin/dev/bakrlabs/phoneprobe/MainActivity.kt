@@ -1,10 +1,11 @@
 package dev.bakrlabs.phoneprobe
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -45,11 +46,15 @@ private val Red = Color(0xFFFF6B6B)
 private val Muted = Color(0xFF8A9A93)
 
 class MainActivity : ComponentActivity() {
-    private val model: ProbeModel by viewModels()
+    private val model get() = (application as PhoneCheckApp).state
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
         setContent { App(model) }
     }
 }
@@ -117,7 +122,7 @@ private fun StoragePanel(m: ProbeModel) {
                 Chip("Full", limit == 0L) { limit = 0L }
             }
             if (limit != 0L) {
-                Text("A fake chip only shows up once the test passes its real size. Full is the only conclusive run: slow, keep the phone charging.", color = Muted, fontSize = 12.sp)
+                Text("A fake chip only shows up once the test passes its real size. Full is the only conclusive run: slow, leaves a few GB free, keep the phone charging.", color = Muted, fontSize = 12.sp)
             }
         }
         RunBar(m, "storage", "Run storage test") { m.runStorage(limit) }

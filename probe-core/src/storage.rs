@@ -2,7 +2,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -10,7 +11,8 @@ use crate::{progress, util};
 
 const BLOCK: usize = 4 * 1024 * 1024;
 const PER_FILE: u64 = 64;
-const RESERVE: u64 = 256 * 1024 * 1024;
+const MIN_RESERVE: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_PAUSE: Duration = Duration::from_millis(250);
 const CHECK_EVERY: u64 = 8;
 
 #[derive(Serialize, Default)]
@@ -32,6 +34,7 @@ struct Cleanup(PathBuf);
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
+        progress::set(7, 0, 0);
         if let Ok(entries) = fs::read_dir(&self.0) {
             for e in entries.flatten() {
                 if e.file_name().to_string_lossy().starts_with("probe") {
@@ -63,6 +66,10 @@ fn block_ok(dir: &Path, j: u64, got: &mut [u8], want: &mut [u8]) -> bool {
     f.read_exact(got).is_ok() && got == want
 }
 
+fn breathe(since: Instant) {
+    sleep(since.elapsed().min(MAX_PAUSE));
+}
+
 fn rate(bytes: u64, secs: f64) -> f64 {
     if secs > 0.0 {
         bytes as f64 / 1_048_576.0 / secs
@@ -84,7 +91,8 @@ pub fn run(dir: &str, limit_mb: u64) -> StorageReport {
     rep.total_bytes = total;
     rep.free_bytes = free;
 
-    let usable = free.saturating_sub(RESERVE);
+    let reserve = MIN_RESERVE.max(total / 20);
+    let usable = free.saturating_sub(reserve);
     let wanted = limit_mb * 1024 * 1024;
     let full_run = limit_mb == 0 || wanted >= usable;
     let cap = if full_run { usable } else { wanted };
@@ -124,6 +132,7 @@ pub fn run(dir: &str, limit_mb: u64) -> StorageReport {
                 }
             }
         }
+        let tick = Instant::now();
         util::fill(&mut buf, j);
         let Some(f) = writer.as_mut() else { break };
         if f.write_all(&buf).is_err() {
@@ -131,6 +140,7 @@ pub fn run(dir: &str, limit_mb: u64) -> StorageReport {
         }
         written += 1;
         progress::set(1, written, blocks);
+        breathe(tick);
 
         if written % CHECK_EVERY == 0 {
             let _ = f.sync_data();
@@ -164,9 +174,11 @@ pub fn run(dir: &str, limit_mb: u64) -> StorageReport {
             rep.complete = false;
             break;
         }
+        let tick = Instant::now();
         if !block_ok(&dir, j, &mut got, &mut want) {
             rep.bad_blocks += 1;
         }
+        breathe(tick);
         checked += 1;
         progress::set(2, checked, written);
     }
